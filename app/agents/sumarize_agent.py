@@ -53,4 +53,4 @@ def sumarize_agent(
         ]
     )
 
-    return result.content
+    return result.text

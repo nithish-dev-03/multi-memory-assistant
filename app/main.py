@@ -7,7 +7,7 @@ from langchain_core.messages import (
     BaseMessage,
     AIMessage,
 )
-from app.utils.chat_services import truncate_history
+from app.utils.chat_services import summarize_history
 from app.core.config import settings
 
 def count_token(model, messages):
