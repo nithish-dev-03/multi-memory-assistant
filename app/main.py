@@ -68,8 +68,7 @@ def create_convo():
             print(f"Tokens: {tokens}")
             max_tokens = settings.sliding_window_size
             if tokens >= max_tokens:
-                message_history = truncate_history(message_history, max_tokens, current_tokens=tokens)
-                print(f"\n\n\t\t\tThis is what i got \n\n{message_history}\n\n")
+                message_history = summarize_history(message_history, max_tokens, current_tokens=tokens)
 
         except Exception as error:
             print(f"\nError: {error}")
