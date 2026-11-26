@@ -35,6 +35,13 @@ def create_convo():
 
         if text.lower() in {"exit", "quit", "bye"}:
             print("Assistant: Goodbye!")
+            print("\n--- STORED HISTORY ---")
+
+            for index, message in enumerate(message_history):
+                print(
+                    f"{index}: "
+                    f"{message.type} -> {message.content}"
+                )
             break
 
         if not text:
@@ -101,15 +108,6 @@ def create_convo():
                 memory.replace_messages(
                     session_id,
                     message_history
-                )
-
-            # Display final stored history.
-            print("\n--- STORED HISTORY ---")
-
-            for index, message in enumerate(message_history):
-                print(
-                    f"{index}: "
-                    f"{message.type} -> {message.content}"
                 )
 
             final_tokens = count_token(model, message_history)
