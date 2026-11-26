@@ -17,11 +17,64 @@ def test_init_rejects_invalid_max_tokens(invalid_max_tokens):
         MemoryContextBuilder(max_tokens=invalid_max_tokens)
 
 
-def test_build_raises_not_implemented_for_now():
-    builder = MemoryContextBuilder()
+def test_build_creates_formatted_context_within_token_budget():
+    builder = MemoryContextBuilder(max_tokens=20)
+    semantic = [
+        (SimpleNamespace(content="Uses Python"), 0.1),
+        (SimpleNamespace(content="Uses FastAPI"), 0.2),
+    ]
+    episodic = [
+        SimpleNamespace(summary="Built a retrieval service")
+    ]
 
-    with pytest.raises(NotImplementedError):
-        builder.build([], [])
+    result = builder.build(
+        semantic_memories=semantic,
+        episodic_memories=episodic,
+        token_counter=lambda text: len(text.split()),
+    )
+
+    assert isinstance(result.formatted_context, str)
+    assert "Relevant long-term facts:" in result.formatted_context
+    assert "Recent experiences:" in result.formatted_context
+    assert result.semantic_memories == semantic
+    assert result.episodic_memories == episodic
+    assert result.token_count == len(result.formatted_context.split())
+    assert result.token_count <= builder.max_tokens
+
+
+def test_build_prioritizes_deduplicates_and_skips_oversized_memories():
+    builder = MemoryContextBuilder(max_tokens=16)
+    close_sem = (SimpleNamespace(content="Uses Python"), 0.1)
+    dup_sem = (SimpleNamespace(content="uses   python"), 0.3)
+    huge_sem = (SimpleNamespace(content="one two three four five six seven eight nine ten"), 0.2)
+    small_sem = (SimpleNamespace(content="Uses SQL"), 0.4)
+
+    older_ep = SimpleNamespace(
+        summary="Created DB models",
+        created_at=datetime(2026, 11, 24, 10, 0, tzinfo=timezone.utc),
+    )
+    newer_ep = SimpleNamespace(
+        summary="Built retrieval",
+        created_at=datetime(2026, 11, 26, 10, 0, tzinfo=timezone.utc),
+    )
+
+    result = builder.build(
+        semantic_memories=[small_sem, dup_sem, huge_sem, close_sem],
+        episodic_memories=[older_ep, newer_ep],
+        token_counter=lambda text: len(text.split()),
+    )
+
+    assert result.semantic_memories == [close_sem, small_sem]
+    assert result.episodic_memories == [newer_ep]
+    assert result.token_count <= builder.max_tokens
+    assert "Built retrieval" in result.formatted_context
+    assert "Created DB models" not in result.formatted_context
+
+
+def test_extract_memory_text_rejects_non_string_and_empty_tuple():
+    assert MemoryContextBuilder._extract_memory_text(()) is None
+    assert MemoryContextBuilder._extract_memory_text(SimpleNamespace(content=123)) is None
+    assert MemoryContextBuilder._extract_memory_text(SimpleNamespace(summary=["bad"])) is None
 
 
 def test_prioritize_episodic_memories_orders_newest_first_and_none_last():

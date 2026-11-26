@@ -28,17 +28,85 @@ class MemoryContextBuilder:
 
     def build(
         self,
-        semantic_memories: list[Any],
+        semantic_memories: list[tuple[Any, float]],
         episodic_memories: list[Any],
+        token_counter: Callable[[str], int],
     ) -> MemoryContext:
         """
-        Builds a structured context from semantic and episodic memories.
+        Builds a structured, deduplicated, token-budgeted context from
+        semantic and episodic memories.
         """
+        deduplicated_semantic = self._deduplicate_memories(
+            self._prioritize_semantic_memories(semantic_memories)
+        )
+        deduplicated_episodic = self._deduplicate_memories(
+            self._prioritize_episodic_memories(episodic_memories)
+        )
 
-        # We will implement filtering, prioritization,
-        # deduplication and token budgeting here.
-        raise NotImplementedError
-    
+        def _select_within_budget(
+            items: list[Any],
+            build_formatted: Callable[[list[Any]], str],
+        ) -> list[Any]:
+            selected: list[Any] = []
+            for memory in items:
+                candidate = [*selected, memory]
+                formatted = build_formatted(candidate)
+                if self._count_tokens(formatted, token_counter) <= self.max_tokens:
+                    selected.append(memory)
+            return selected
+
+        selected_semantic = _select_within_budget(
+            deduplicated_semantic,
+            lambda candidate: self._format_context(candidate, []),
+        )
+        selected_episodic = _select_within_budget(
+            deduplicated_episodic,
+            lambda candidate: self._format_context(selected_semantic, candidate),
+        )
+
+        formatted_context = self._format_context(
+            selected_semantic,
+            selected_episodic,
+        )
+        token_count = self._count_tokens(
+            formatted_context,
+            token_counter,
+        )
+
+        return MemoryContext(
+            semantic_memories=selected_semantic,
+            episodic_memories=selected_episodic,
+            formatted_context=formatted_context,
+            token_count=token_count,
+        )
+
+    @staticmethod
+    def _format_section(title: str, memories: list[Any]) -> str | None:
+        lines = [
+            content.strip()
+            for memory in memories
+            if (content := MemoryContextBuilder._extract_memory_text(memory))
+            and content.strip()
+        ]
+        if not lines:
+            return None
+        return f"{title}:\n" + "\n".join(f"- {line}" for line in lines)
+
+    @staticmethod
+    def _format_context(
+        semantic_memories: list[Any],
+        episodic_memories: list[Any],
+    ) -> str:
+        """Format selected memories into separate context sections."""
+        sections = [
+            section
+            for title, memories in (
+                ("Relevant long-term facts", semantic_memories),
+                ("Recent experiences", episodic_memories),
+            )
+            if (section := MemoryContextBuilder._format_section(title, memories))
+        ]
+        return "\n\n".join(sections)
 
     @staticmethod
     def _extract_memory_text(item: Any) -> str | None:
@@ -46,10 +114,17 @@ class MemoryContextBuilder:
         Extract text from a semantic `(memory, distance)` tuple, a semantic
         memory (`content`), or an episodic memory (`summary`).
         """
-        memory = item[0] if isinstance(item, tuple) else item
+        if isinstance(item, tuple):
+            if not item:
+                return None
+            memory = item[0]
+        else:
+            memory = item
         text = getattr(memory, "content", None)
         if text is None:
             text = getattr(memory, "summary", None)
+        if not isinstance(text, str):
+            return None
         return text
 
     @staticmethod
