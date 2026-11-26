@@ -2,8 +2,8 @@
 from typing import Any
 import uuid
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from sqlalchemy import select
 
 from app.models.episodic_memory import EpisodicMemory
 
@@ -122,15 +122,32 @@ class EpisodicMemoryRepository:
         user_id: str,
         limit: int = 20,
         offset: int = 0,
+        event_type: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[EpisodicMemory]:
 
         self._validate_text(user_id, "User ID")
         self._validate_min_int(limit, 1, "limit must be greater than zero")
         self._validate_min_int(offset, 0, "offset cannot be negative")
+        self._validate_optional_text(event_type, "Event type")
+
+        if metadata_filters is not None and not isinstance(metadata_filters, dict):
+            raise ValueError("Metadata filters must be a dictionary")
+
+        statement = select(EpisodicMemory).where(
+            EpisodicMemory.user_id == user_id
+        )
+
+        if event_type is not None:
+            statement = statement.where(EpisodicMemory.event_type == event_type)
+
+        if metadata_filters:
+            statement = statement.where(
+                EpisodicMemory.metadata_json.contains(metadata_filters)
+            )
 
         statement = (
-            select(EpisodicMemory)
-            .where(EpisodicMemory.user_id == user_id)
+            statement
             .order_by(
                 EpisodicMemory.created_at.desc(),
                 EpisodicMemory.id.desc(),
@@ -140,4 +157,30 @@ class EpisodicMemoryRepository:
         )
 
         return list(self.db.execute(statement).scalars().all())
+
+    def find_recent_by_summary(
+        self,
+        user_id: str,
+        summary: str,
+        session_id: str | None = None,
+    ) -> EpisodicMemory | None:
+        """Find an existing episodic memory with matching normalized summary."""
+        self._validate_text(user_id, "User ID")
+        self._validate_text(summary, "Summary")
+        self._validate_optional_text(session_id, "Session ID")
+
+        normalized = " ".join(summary.lower().split())
+        statement = select(EpisodicMemory).where(
+            EpisodicMemory.user_id == user_id,
+            func.lower(func.btrim(EpisodicMemory.summary)) == normalized,
+        )
+        if session_id is not None:
+            statement = statement.where(EpisodicMemory.session_id == session_id)
+
+        statement = statement.order_by(
+            EpisodicMemory.created_at.desc(),
+            EpisodicMemory.id.desc(),
+        ).limit(1)
+
+        return self.db.execute(statement).scalar_one_or_none()
 

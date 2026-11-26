@@ -390,3 +390,90 @@ def test_search_memories_with_distance_validates_inputs(service, kwargs, message
 
     service._mock_embedding.embed_query.assert_not_called()
     service._mock_repo.search_similar_with_distance.assert_not_called()
+
+
+def test_deactivate_memory_is_idempotent_and_returns_none_when_missing(service):
+    memory_id = UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    active = SemanticMemory(
+        id=memory_id,
+        user_id="user-1",
+        content="Fact",
+        embedding=[0.1],
+        is_active=True,
+    )
+    inactive = SemanticMemory(
+        id=memory_id,
+        user_id="user-1",
+        content="Fact",
+        embedding=[0.1],
+        is_active=False,
+    )
+
+    service._mock_repo.get_by_id.return_value = None
+    assert service.deactivate_memory(memory_id, "user-1") is None
+
+    service._mock_repo.get_by_id.return_value = inactive
+    assert service.deactivate_memory(memory_id, "user-1") is inactive
+    service._mock_repo.deactivate.assert_not_called()
+
+    service._mock_repo.get_by_id.return_value = active
+    service._mock_repo.deactivate.return_value = inactive
+    assert service.deactivate_memory(memory_id, "user-1") is inactive
+    service._mock_repo.deactivate.assert_called_once_with(
+        memory_id=memory_id,
+        user_id="user-1",
+    )
+
+
+def test_upsert_memory_handles_exact_duplicate_near_duplicate_and_create(service):
+    mem_id = UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    existing = SemanticMemory(
+        id=mem_id,
+        user_id="user-1",
+        content="Uses Python",
+        embedding=[0.1],
+        category="skill",
+        confidence=0.9,
+        metadata_json=None,
+    )
+
+    # 1. Exact duplicate with same metadata -> unchanged, no embedding API call.
+    service._mock_repo.find_active_by_content.return_value = existing
+    mem, status = service.upsert_memory(
+        user_id="user-1",
+        content="Uses Python",
+        category="skill",
+        confidence=0.9,
+    )
+    assert mem is existing
+    assert status == "unchanged"
+    service._mock_embedding.embed_document.assert_not_called()
+
+    # 2. Near-duplicate found via vector distance -> updates existing memory.
+    service._mock_repo.find_active_by_content.return_value = None
+    service._mock_embedding.embed_document.return_value = [0.2]
+    service._mock_repo.search_similar_with_distance.return_value = [(existing, 0.03)]
+    service._mock_repo.update.return_value = existing
+    mem2, status2 = service.upsert_memory(
+        user_id="user-1",
+        content="User codes in Python",
+        category="skill",
+        confidence=0.95,
+    )
+    assert mem2 is existing
+    assert status2 == "updated"
+    service._mock_repo.update.assert_called_once()
+
+    # 3. Novel fact -> creates a new semantic memory.
+    service._mock_repo.search_similar_with_distance.return_value = []
+    created = SemanticMemory(id=mem_id, user_id="user-1", content="Lives in Chennai", embedding=[0.3])
+    service._mock_repo.create.return_value = created
+    mem3, status3 = service.upsert_memory(
+        user_id="user-1",
+        content="Lives in Chennai",
+        category="fact",
+        confidence=0.9,
+        source_session_id="sess-1",
+    )
+    assert mem3 is created
+    assert status3 == "created"

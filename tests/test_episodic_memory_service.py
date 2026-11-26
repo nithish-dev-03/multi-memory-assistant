@@ -179,3 +179,39 @@ def test_get_user_memories_rejects_invalid_input(service, kwargs, expected_messa
         service.get_user_memories(**kwargs)
 
     service._mock_repo.get_by_user.assert_not_called()
+
+
+def test_create_memory_if_new_prevents_duplicate_writes(service):
+    existing = EpisodicMemory(
+        id=uuid4(),
+        user_id="user-1",
+        session_id="sess-1",
+        summary="Completed migration",
+    )
+    service._mock_repo.find_recent_by_summary.return_value = existing
+
+    memory, created = service.create_memory_if_new(
+        user_id="user-1",
+        summary="Completed migration",
+        session_id="sess-1",
+    )
+    assert memory is existing
+    assert created is False
+    service._mock_repo.create.assert_not_called()
+
+    service._mock_repo.find_recent_by_summary.return_value = None
+    new_memory = EpisodicMemory(
+        id=uuid4(),
+        user_id="user-1",
+        session_id="sess-1",
+        summary="Added vector index",
+    )
+    service._mock_repo.create.return_value = new_memory
+    memory2, created2 = service.create_memory_if_new(
+        user_id="user-1",
+        summary="Added vector index",
+        session_id="sess-1",
+    )
+    assert memory2 is new_memory
+    assert created2 is True
+    service._mock_repo.create.assert_called_once()

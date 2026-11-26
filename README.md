@@ -1,54 +1,106 @@
 # Multi-Memory Assistant
 
-An interactive CLI chat assistant built with Python, LangChain, Google Gemini (`langchain-google-genai`), SQLAlchemy, and PostgreSQL (`pgvector`), featuring streaming responses, session-based short-term memory, sliding-window summarization, semantic vector memory, and episodic memory.
+An interactive CLI conversational assistant built with Python, LangChain, Google Gemini (`langchain-google-genai`), SQLAlchemy, and PostgreSQL (`pgvector`). It combines session-based short-term memory, sliding-window summarization, vector-backed semantic memory, recency-ordered episodic memory, unified prompt token budgeting, and an LLM-powered memory management agent.
 
-## Features
+## Architecture
 
-- **Streaming CLI chat**: Real-time token streaming via `ChatGoogleGenerativeAI`.
-- **Session-based short-term memory**: `ShortTermMemory` manages isolated per-session message histories with empty-ID validation and turn-safe rollback on streaming or summarization errors.
-- **Token-budgeted context compression**: Tracks message token counts per turn and summarizes older exchanges into a structured summary while preserving recent exchanges.
-- **Structured summarization**: Prioritizes stable user facts, preferences, technical skills, active projects, and decisions over transient details without turning assumptions into facts.
-- **Semantic memory storage, search & updates**: Generates document/query embeddings via `EmbeddingService` (`GoogleGenerativeAIEmbeddings`) and stores, updates (regenerating embeddings only when content changes), and queries user-scoped vector memories in PostgreSQL with `pgvector` through `SemanticMemoryRepository` and `SemanticMemoryService`.
-- **Episodic memory tracking**: Stores and retrieves session- and user-scoped event/conversation summaries with deterministic pagination through `EpisodicMemoryRepository` and `EpisodicMemoryService`.
-- **Database migrations**: SQLAlchemy ORM models (`SemanticMemory`, `EpisodicMemory`) managed with Alembic.
+```mermaid
+flowchart TD
+    User["CLI User (app/main.py)"] --> ShortTerm["ShortTermMemory (Session History)"]
+    User --> Retrieval["MemoryRetrievalService"]
+    Retrieval --> SemanticSvc["SemanticMemoryService"]
+    Retrieval --> EpisodicSvc["EpisodicMemoryService"]
+    SemanticSvc --> EmbedSvc["EmbeddingService (Gemini Embeddings)"]
+    SemanticSvc --> SemanticRepo["SemanticMemoryRepository"]
+    EpisodicSvc --> EpisodicRepo["EpisodicMemoryRepository"]
+    SemanticRepo --> Postgres["PostgreSQL + pgvector"]
+    EpisodicRepo --> Postgres
+
+    Retrieval --> ContextBuilder["MemoryContextBuilder"]
+    ShortTerm --> BudgetMgr["PromptBudgetManager"]
+    ContextBuilder --> BudgetMgr
+    BudgetMgr --> ChatModel["ChatGoogleGenerativeAI"]
+
+    ShortTerm --> SummarizeSvc["summarize_history + summarize_agent"]
+    ChatModel --> MemoryAgent["MemoryManagerAgent (Structured Output + Tools)"]
+    MemoryAgent --> SemanticSvc
+    MemoryAgent --> EpisodicSvc
+```
+
+### Memory Types
+
+| Memory Type | Storage | Retrieval Strategy | Purpose |
+| --- | --- | --- | --- |
+| **Short-Term Memory** | In-memory (`ShortTermMemory`) | Per-session chronological list | Holds active conversation turns and rolling `"Conversation summary"` messages; isolated from retrieved long-term context. |
+| **Semantic Memory** | PostgreSQL `semantic_memories` (`Vector(1536)`) | Cosine similarity via `pgvector` (`(memory, distance)`) + optional `max_distance`, `category`, and JSONB `metadata_json` filters | Durable facts, user preferences, technical skills, goals, projects, and decisions; supports soft deactivation (`is_active=False`) and conditional re-embedding on content updates. |
+| **Episodic Memory** | PostgreSQL `episodic_memories` | Recency (`created_at DESC, id DESC`), optional session/event/metadata filters | Chronological summaries of significant conversation events and milestones. |
+
+## Request Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CLI as app/main.py
+    participant DB as PostgreSQL (pgvector)
+    participant R as MemoryRetrievalService
+    participant PB as PromptBudgetManager
+    participant ST as ShortTermMemory
+    participant LLM as Gemini Chat Model
+    participant MA as MemoryManagerAgent
+
+    U->>CLI: Enter message
+    CLI->>ST: Backup previous_history
+    CLI->>R: retrieve_memories(user_id, query)
+    R->>DB: Vector search (semantic) + recency query (episodic)
+    DB-->>R: MemoryRetrievalResult
+    CLI->>PB: build_prompt(previous_history, user_msg, memories)
+    PB-->>CLI: Token-budgeted transient messages
+    CLI->>ST: Append HumanMessage
+    CLI->>LLM: stream(budget_result.messages)
+    LLM-->>CLI: Streamed response
+    CLI->>ST: Append AIMessage
+    alt Tokens > SLIDING_WINDOW_SIZE
+        CLI->>ST: Summarize older exchanges & replace history
+    end
+    CLI->>MA: process_turn(user_id, session_id, turn, existing_memories)
+    MA->>DB: Scoped upsert/update/deactivate via validated tools
+```
+
+If prompt assembly, streaming, or short-term summarization fails, `ShortTermMemory` rolls back to `previous_history`. Long-term memory extraction runs afterwards in an isolated database session so a failed memory write logs a warning without corrupting short-term history.
 
 ## Project Structure
 
 ```text
 ├── app/
-│   ├── main.py                               # CLI entry point (`uv run assistant`) and chat loop
+│   ├── main.py                                 # CLI entry point (`uv run assistant`) and turn orchestration
 │   ├── core/
-│   │   ├── config.py                         # Environment configuration (`Settings`)
-│   │   └── database.py                       # SQLAlchemy engine, `SessionLocal`, `Base`, `get_db`
+│   │   ├── config.py                           # Environment & validation (`Settings`)
+│   │   └── database.py                         # SQLAlchemy engine, `SessionLocal`, `get_db`, `get_db_session`
 │   ├── agents/
-│   │   ├── chat_agent.py                     # Gemini chat model factory
-│   │   └── summarize_agent.py                # Conversation summarization agent and prompt
+│   │   ├── chat_agent.py                       # Gemini chat model factory
+│   │   ├── summarize_agent.py                  # Structured conversation summarization agent
+│   │   └── memory_agent.py                     # MemoryManagerAgent, Pydantic schemas, secret guard, scoped tools
 │   ├── memory/
-│   │   ├── short_term.py                     # Session-based in-memory chat history
-│   │   ├── semantic.py                       # `SemanticMemoryService` (`create_memory`, `search_memories`, `update_memory`)
-│   │   └── episodic.py                       # `EpisodicMemoryService` (`create_memory`, `get_memory`, `get_session_memories`, `get_user_memories`)
+│   │   ├── short_term.py                       # Session-scoped short-term conversation store
+│   │   ├── semantic.py                         # SemanticMemoryService (lifecycle, search, upsert, soft delete)
+│   │   ├── episodic.py                         # EpisodicMemoryService (create, duplicate check, queries)
+│   │   ├── retrieval.py                        # MemoryRetrievalService coordinating semantic & episodic stores
+│   │   └── context_builder.py                  # Prioritization, cross-store deduplication, formatting, token budget
 │   ├── models/
-│   │   ├── semantic_memory.py                # `SemanticMemory` ORM model (`pgvector`)
-│   │   └── episodic_memory.py                # `EpisodicMemory` ORM model
+│   │   ├── semantic_memory.py                  # `SemanticMemory` ORM model (`Vector(1536)`)
+│   │   └── episodic_memory.py                  # `EpisodicMemory` ORM model
 │   ├── repositories/
-│   │   ├── semantic_memory_repository.py     # Semantic memory CRUD, soft deactivation, and cosine similarity search
-│   │   └── episodic_memory_repository.py     # Episodic memory creation, ID/session lookups, and paginated user queries
+│   │   ├── semantic_memory_repository.py       # Semantic CRUD, soft deactivation, cosine distance search
+│   │   └── episodic_memory_repository.py       # Episodic CRUD, session/user queries, duplicate lookup
 │   ├── services/
-│   │   └── embedding_service.py              # Gemini document/query embedding wrapper
+│   │   └── embedding_service.py                # Google GenAI document & query embedding wrapper
 │   └── utils/
-│       └── chat_services.py                  # Sliding-window history summarization and token validation
-├── migrations/                               # Alembic migration environment and revisions
+│       ├── chat_services.py                    # Sliding-window history summarization
+│       └── prompt_budget.py                    # Unified prompt token budget allocation & overflow protection
+├── migrations/                                 # Alembic migrations (`pgvector` extension + tables)
 ├── scripts/
-│   └── manual_semantic_memory_repository.py  # Manual live DB/Gemini repository check
-└── tests/
-    ├── test_chat_services.py                 # Unit tests for sliding-window summarization
-    ├── test_main.py                          # Integration/rollback tests for CLI loop
-    ├── test_short_term.py                    # Unit tests for `ShortTermMemory`
-    ├── test_semantic_memory_repository.py    # Unit tests for `SemanticMemoryRepository`
-    ├── test_semantic_memory_service.py       # Unit tests for `SemanticMemoryService`
-    ├── test_episodic_memory_repository.py    # Unit tests for `EpisodicMemoryRepository`
-    ├── test_episodic_memory_service.py       # Unit tests for `EpisodicMemoryService`
-    └── test_embedding_service.py             # Manual live Gemini embedding check
+│   └── manual_semantic_memory_repository.py    # Live PostgreSQL + Gemini verification script
+└── tests/                                      # Automated mocked unit & integration test suite
 ```
 
 ## Setup
@@ -61,7 +113,7 @@ An interactive CLI chat assistant built with Python, LangChain, Google Gemini (`
 
 2. **Configure environment variables**:
 
-   Copy `.env.example` to `.env` and fill in your credentials:
+   Copy `.env.example` to `.env` and set your own credentials (never commit `.env` or real API keys):
 
    ```bash
    cp .env.example .env
@@ -70,13 +122,21 @@ An interactive CLI chat assistant built with Python, LangChain, Google Gemini (`
    | Variable | Default | Description |
    | --- | --- | --- |
    | `GEMINI_API_KEY` | *(required)* | Google Gemini API key |
-   | `CHAT_MODEL` | `gemini-2.5-flash` | Gemini model used for chat and summarization |
-   | `SLIDING_WINDOW_SIZE` (or `SLIDING_WIN_SIZE`) | `500` | Token threshold that triggers history compression |
-   | `DATABASE_URL` | *(required for DB)* | PostgreSQL connection URL (e.g. `postgresql+psycopg://user:pass@localhost:5432/multi_memory`) |
+   | `CHAT_MODEL` | `gemini-2.5-flash` | Gemini model used for chat, summarization, and memory classification |
    | `EMBEDDING_MODEL` | `gemini-embedding-001` | Gemini embedding model used by `EmbeddingService` |
-   | `EMBEDDING_DIMENSION` | `1536` | Vector dimension for embeddings and `pgvector` column (validated against the `1536` schema contract) |
+   | `EMBEDDING_DIMENSION` | `1536` | Vector dimension validated against the `pgvector` schema contract |
+   | `DATABASE_URL` | *(required for DB)* | PostgreSQL URL, e.g. `postgresql+psycopg://<user>:<pass>@localhost:5432/multi_memory` |
+   | `CLI_USER_ID` | *(prompted if unset)* | Development user ID for scoping CLI memories |
+   | `CLI_SESSION_ID` | `cli-session` | Default session ID for short-term and episodic memory |
+   | `SLIDING_WINDOW_SIZE` (or `SLIDING_WIN_SIZE`) | `500` | Token threshold that triggers short-term history compression |
+   | `MAX_PROMPT_TOKENS` | `4000` | Total prompt token ceiling (input + reserved response) |
+   | `RESPONSE_RESERVE_TOKENS` | `1000` | Tokens reserved for the assistant reply |
+   | `MEMORY_CONTEXT_MAX_TOKENS` | `1000` | Maximum tokens allocated to injected long-term memories |
+   | `SEMANTIC_RETRIEVAL_LIMIT` | `5` | Number of semantic memories fetched per turn |
+   | `EPISODIC_RETRIEVAL_LIMIT` | `5` | Number of episodic memories fetched per turn |
+   | `SEMANTIC_MAX_DISTANCE` | *(unset)* | Optional cosine distance cutoff (`0.0` to `2.0`) |
 
-3. **Run database migrations** (requires PostgreSQL with the `pgvector` extension enabled):
+3. **Run database migrations** (PostgreSQL with `pgvector` enabled):
 
    ```bash
    uv run alembic upgrade head
@@ -84,25 +144,36 @@ An interactive CLI chat assistant built with Python, LangChain, Google Gemini (`
 
 ## Usage
 
-Start the interactive assistant:
+Start the interactive CLI (uses `CLI_USER_ID` from `.env`, `--user-id`, or prompts interactively):
 
 ```bash
-uv run assistant
+uv run assistant --user-id dev-user-001 --session-id session-1
 ```
 
 Type `exit`, `quit`, or `bye` to end the session.
 
 ## Testing
 
-Run the automated unit test suite (mocked, no external API or database calls):
+### Unit & Integration Tests (Mocked)
+
+Automated tests mock Gemini LLM/embedding calls and database sessions so they run fast and offline without mutating production data:
 
 ```bash
 uv run pytest -v
 ```
 
-Manual live verification scripts (require valid `GEMINI_API_KEY` and `DATABASE_URL`):
+### Live Integration Verification
+
+Live verification scripts call the configured PostgreSQL database and Google Gemini APIs directly (requires valid `.env` credentials and migrated tables):
 
 ```bash
 uv run python -m tests.test_embedding_service
 uv run python -m scripts.manual_semantic_memory_repository
 ```
+
+## Current Limitations
+
+- **Episodic memories are recency-only**: The `episodic_memories` table does not yet store embeddings or an `is_active` column, so episodic retrieval sorts by recency and episodic records are append-only (with duplicate-summary prevention).
+- **Fixed `1536` embedding dimension**: `Settings` enforces `EMBEDDING_DIMENSION=1536` to match the existing Alembic migration (`Vector(dim=1536)`).
+- **Clearing nullable fields on update**: `SemanticMemoryRepository.update()` currently treats `None` as "leave unchanged", so explicitly clearing nullable fields to `NULL` will require a sentinel value in a future iteration.
+- **No configured linter/type-checker**: `pyproject.toml` currently configures `pytest` only (`ruff`/`mypy` are not configured).

@@ -36,11 +36,14 @@ class MemoryContextBuilder:
         Builds a structured, deduplicated, token-budgeted context from
         semantic and episodic memories.
         """
+        seen_contents: set[str] = set()
         deduplicated_semantic = self._deduplicate_memories(
-            self._prioritize_semantic_memories(semantic_memories)
+            self._prioritize_semantic_memories(semantic_memories),
+            seen_contents=seen_contents,
         )
         deduplicated_episodic = self._deduplicate_memories(
-            self._prioritize_episodic_memories(episodic_memories)
+            self._prioritize_episodic_memories(episodic_memories),
+            seen_contents=seen_contents,
         )
 
         def _select_within_budget(
@@ -137,13 +140,15 @@ class MemoryContextBuilder:
     def _deduplicate_memories(
         self,
         memories: list[Any],
+        seen_contents: set[str] | None = None,
     ) -> list[Any]:
         """
         Remove memories containing duplicate content.
         Preserve the original order.
         """
         unique_memories = []
-        seen_contents = set()
+        if seen_contents is None:
+            seen_contents = set()
 
         for memory in memories:
             content = self._extract_memory_text(memory)

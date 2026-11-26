@@ -1,7 +1,9 @@
 
-from sqlalchemy.orm import Session, object_session
-from sqlalchemy import select
+from typing import Any
 import uuid
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, object_session
 
 from app.models.semantic_memory import SemanticMemory
 
@@ -17,6 +19,27 @@ class SemanticMemoryRepository:
     def _validate_min_int(self, value: int, min_value: int, message: str) -> None:
         if isinstance(value, bool) or not isinstance(value, int) or value < min_value:
             raise ValueError(message)
+
+    @staticmethod
+    def _apply_filters(
+        statement: Any,
+        category: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
+    ) -> Any:
+        if category is not None:
+            if not isinstance(category, str) or not category.strip():
+                raise ValueError("Category cannot be empty")
+            statement = statement.where(SemanticMemory.category == category)
+
+        if metadata_filters is not None:
+            if not isinstance(metadata_filters, dict):
+                raise ValueError("Metadata filters must be a dictionary")
+            if metadata_filters:
+                statement = statement.where(
+                    SemanticMemory.metadata_json.contains(metadata_filters)
+                )
+
+        return statement
 
     def create(
         self,
@@ -59,6 +82,8 @@ class SemanticMemoryRepository:
         query_embedding: list[float],
         top_k: int = 5,
         max_distance: float | None = None,
+        category: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[SemanticMemory]:
         """
         Retrieves the most semantically similar active memories
@@ -71,21 +96,18 @@ class SemanticMemoryRepository:
             query_embedding
         )
 
-        statement = (
-            select(SemanticMemory)
-            .where(
-                SemanticMemory.user_id == user_id,
-                SemanticMemory.is_active.is_(True),
-            )
-            .order_by(distance.asc())
-            .limit(top_k)
+        statement = select(SemanticMemory).where(
+            SemanticMemory.user_id == user_id,
+            SemanticMemory.is_active.is_(True),
         )
+        statement = self._apply_filters(statement, category, metadata_filters)
 
         if max_distance is not None:
             statement = statement.where(distance <= max_distance)
 
+        statement = statement.order_by(distance.asc()).limit(top_k)
+
         return list(self.db.scalars(statement).all())
-    
 
     def search_similar_with_distance(
         self,
@@ -93,6 +115,8 @@ class SemanticMemoryRepository:
         query_embedding: list[float],
         top_k: int = 5,
         max_distance: float | None = None,
+        category: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[tuple[SemanticMemory, float]]:
         """
         Retrieves active user memories together with their cosine distance.
@@ -103,16 +127,14 @@ class SemanticMemoryRepository:
         self._validate_min_int(top_k, 1, "top_k must be greater than zero")
 
         distance = SemanticMemory.embedding.cosine_distance(query_embedding)
-        statement = (
-            select(
-                SemanticMemory,
-                distance.label("distance"),
-            )
-            .where(
-                SemanticMemory.user_id == user_id,
-                SemanticMemory.is_active.is_(True),
-            )
+        statement = select(
+            SemanticMemory,
+            distance.label("distance"),
+        ).where(
+            SemanticMemory.user_id == user_id,
+            SemanticMemory.is_active.is_(True),
         )
+        statement = self._apply_filters(statement, category, metadata_filters)
 
         if max_distance is not None:
             statement = statement.where(distance <= max_distance)
@@ -121,6 +143,25 @@ class SemanticMemoryRepository:
 
         rows = self.db.execute(statement).all()
         return [(memory, float(memory_distance)) for memory, memory_distance in rows]
+
+    def find_active_by_content(
+        self,
+        user_id: str,
+        content: str,
+    ) -> SemanticMemory | None:
+        """Find an active user memory matching normalized content."""
+        normalized = " ".join(content.lower().split())
+        statement = (
+            select(SemanticMemory)
+            .where(
+                SemanticMemory.user_id == user_id,
+                SemanticMemory.is_active.is_(True),
+                func.lower(func.btrim(SemanticMemory.content)) == normalized,
+            )
+            .order_by(SemanticMemory.created_at.desc())
+            .limit(1)
+        )
+        return self.db.scalar(statement)
 
     def get_by_id(
         self,
@@ -142,6 +183,8 @@ class SemanticMemoryRepository:
         limit: int = 20,
         offset: int = 0,
         active_only: bool = True,
+        category: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[SemanticMemory]:
 
         self._validate_min_int(limit, 1, "limit must be greater than zero")
@@ -155,6 +198,8 @@ class SemanticMemoryRepository:
             statement = statement.where(
                 SemanticMemory.is_active.is_(True)
             )
+
+        statement = self._apply_filters(statement, category, metadata_filters)
 
         statement = (
             statement

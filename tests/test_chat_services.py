@@ -198,3 +198,30 @@ def test_system_message_only_exceeds_budget_raises_value_error(token_counter_pat
             )
 
     mock_summarize.assert_not_called()
+
+
+def test_history_exactly_at_token_limit_returns_original(token_counter_patch):
+    messages = [
+        SystemMessage(content="System"),
+        HumanMessage(content="one two"),
+        AIMessage(content="three four"),
+    ]
+    with patch.object(chat_services, "summarize_agent") as mock_summarize:
+        result = chat_services.summarize_history(messages, max_tokens=5)
+
+    assert result is messages
+    mock_summarize.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"max_tokens": 0}, "max_tokens must be a positive integer"),
+        ({"max_tokens": True}, "max_tokens must be a positive integer"),
+        ({"max_tokens": 10, "recent_exchanges": -1}, "recent_exchanges cannot be negative"),
+        ({"max_tokens": 10, "current_tokens": -1}, "current_tokens must be a non-negative integer"),
+    ],
+)
+def test_summarize_history_rejects_invalid_arguments(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        chat_services.summarize_history([SystemMessage(content="System")], **kwargs)

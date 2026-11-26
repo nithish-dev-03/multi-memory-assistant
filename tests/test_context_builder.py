@@ -77,6 +77,25 @@ def test_extract_memory_text_rejects_non_string_and_empty_tuple():
     assert MemoryContextBuilder._extract_memory_text(SimpleNamespace(summary=["bad"])) is None
 
 
+def test_build_deduplicates_across_semantic_and_episodic_stores():
+    builder = MemoryContextBuilder(max_tokens=50)
+    sem = [(SimpleNamespace(content="User built FastAPI APIs"), 0.1)]
+    ep = [
+        SimpleNamespace(summary="  user built  fastapi apis "),
+        SimpleNamespace(summary="Configured Alembic migrations"),
+    ]
+
+    result = builder.build(
+        semantic_memories=sem,
+        episodic_memories=ep,
+        token_counter=lambda text: len(text.split()),
+    )
+
+    assert result.semantic_memories == sem
+    assert result.episodic_memories == [ep[1]]
+    assert result.formatted_context.count("FastAPI") == 1
+
+
 def test_prioritize_episodic_memories_orders_newest_first_and_none_last():
     oldest = SimpleNamespace(
         id="oldest",
