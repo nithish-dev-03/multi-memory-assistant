@@ -14,6 +14,10 @@ class SemanticMemoryRepository:
     def __init__(self, db: Session):
         self.db = db
 
+    def _validate_min_int(self, value: int, min_value: int, message: str) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < min_value:
+            raise ValueError(message)
+
     def create(
         self,
         user_id: str,
@@ -61,8 +65,7 @@ class SemanticMemoryRepository:
         belonging to a specific user.
         """
 
-        if top_k <= 0:
-            raise ValueError("top_k must be greater than zero")
+        self._validate_min_int(top_k, 1, "top_k must be greater than zero")
 
         distance = SemanticMemory.embedding.cosine_distance(
             query_embedding
@@ -105,11 +108,8 @@ class SemanticMemoryRepository:
         active_only: bool = True,
     ) -> list[SemanticMemory]:
 
-        if limit <= 0:
-            raise ValueError("limit must be greater than zero")
-
-        if offset < 0:
-            raise ValueError("offset cannot be negative")
+        self._validate_min_int(limit, 1, "limit must be greater than zero")
+        self._validate_min_int(offset, 0, "offset cannot be negative")
 
         statement = select(SemanticMemory).where(
             SemanticMemory.user_id == user_id
@@ -165,20 +165,29 @@ class SemanticMemoryRepository:
         category: str | None = None,
         confidence: float | None = None,
         metadata_json: dict | None = None,
+        memory: SemanticMemory | None = None,
     ) -> SemanticMemory | None:
-        memory = self.get_by_id(memory_id, user_id)
+        if memory is None:
+            memory = self.get_by_id(memory_id, user_id)
+        elif memory.id != memory_id or memory.user_id != user_id:
+            raise ValueError("Provided memory does not match memory_id and user_id")
 
         if memory is None:
             return None
 
-        if content is not None:
-            if not content.strip():
-                raise ValueError("Content cannot be empty")
-            if content != memory.content and embedding is None:
-                raise ValueError("Embedding is required when content changes")
-            memory.content = content
+        if content is not None and not content.strip():
+            raise ValueError("Content cannot be empty")
 
-        if embedding is not None:
+        content_changed = content is not None and content != memory.content
+
+        if embedding is not None and not content_changed:
+            raise ValueError("Embedding can only be updated when content changes")
+
+        if content_changed and embedding is None:
+            raise ValueError("Embedding is required when content changes")
+
+        if content_changed:
+            memory.content = content
             memory.embedding = embedding
 
         if category is not None:

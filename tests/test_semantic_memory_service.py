@@ -228,6 +228,7 @@ def test_update_memory_content_change_regenerates_embedding(service):
         category=None,
         confidence=None,
         metadata_json=None,
+        memory=existing,
     )
 
 
@@ -258,6 +259,7 @@ def test_update_memory_same_content_skips_embedding(service):
         category=None,
         confidence=None,
         metadata_json=None,
+        memory=existing,
     )
 
 
@@ -292,6 +294,7 @@ def test_update_memory_metadata_only_does_not_regenerate_embedding(service, kwar
         category=kwargs.get("category"),
         confidence=kwargs.get("confidence"),
         metadata_json=kwargs.get("metadata_json"),
+        memory=existing,
     )
 
 

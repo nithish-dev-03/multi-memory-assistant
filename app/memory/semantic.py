@@ -126,4 +126,5 @@ class SemanticMemoryService:
             category=category,
             confidence=confidence,
             metadata_json=metadata_json,
+            memory=existing_memory,
         )

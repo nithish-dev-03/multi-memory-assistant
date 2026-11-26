@@ -14,7 +14,9 @@ from app.repositories.semantic_memory_repository import (
     [
         (0, 0, "limit must be greater than zero"),
         (-5, 0, "limit must be greater than zero"),
+        (True, 0, "limit must be greater than zero"),
         (10, -1, "offset cannot be negative"),
+        (10, True, "offset cannot be negative"),
     ],
 )
 def test_get_by_user_invalid_pagination_raises_value_error(
@@ -75,11 +77,16 @@ def test_get_by_id_scopes_query_to_memory_and_user():
     assert "semantic_memories.user_id = :user_id_1" in compiled_sql
 
 
-def test_search_similar_invalid_top_k_raises_value_error():
+@pytest.mark.parametrize("invalid_top_k", [0, -1, True, 1.5])
+def test_search_similar_invalid_top_k_raises_value_error(invalid_top_k):
     repository = SemanticMemoryRepository(MagicMock())
 
     with pytest.raises(ValueError, match="top_k must be greater than zero"):
-        repository.search_similar(user_id="test-user-001", query_embedding=[0.1], top_k=0)
+        repository.search_similar(
+            user_id="test-user-001",
+            query_embedding=[0.1],
+            top_k=invalid_top_k,
+        )
 
 
 def test_deactivate_existing_user_memory_sets_is_active_false():
@@ -254,3 +261,65 @@ def test_update_memory_belonging_to_another_user_returns_none():
 
     assert result is None
     mock_db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("content", [None, "original content"])
+def test_update_embedding_without_content_change_raises_value_error(content):
+    mock_db = MagicMock()
+    memory_id = uuid.UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    memory = SemanticMemory(
+        id=memory_id,
+        user_id="test-user-001",
+        content="original content",
+        embedding=[0.1],
+    )
+    mock_db.scalar.return_value = memory
+    repository = SemanticMemoryRepository(mock_db)
+
+    with pytest.raises(
+        ValueError,
+        match="Embedding can only be updated when content changes",
+    ):
+        repository.update(
+            memory_id=memory_id,
+            user_id="test-user-001",
+            content=content,
+            embedding=[0.9],
+        )
+
+    assert memory.embedding == [0.1]
+    mock_db.commit.assert_not_called()
+
+
+def test_update_with_preloaded_memory_skips_duplicate_lookup():
+    mock_db = MagicMock()
+    memory_id = uuid.UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    memory = SemanticMemory(
+        id=memory_id,
+        user_id="test-user-001",
+        content="original content",
+        embedding=[0.1],
+        confidence=0.5,
+    )
+    repository = SemanticMemoryRepository(mock_db)
+
+    result = repository.update(
+        memory_id=memory_id,
+        user_id="test-user-001",
+        confidence=0.9,
+        memory=memory,
+    )
+
+    assert result is memory
+    assert memory.confidence == 0.9
+    mock_db.scalar.assert_not_called()
+    mock_db.commit.assert_called_once()
+
+
+def test_settings_rejects_mismatched_embedding_dimension(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("EMBEDDING_DIMENSION", "768")
+
+    with pytest.raises(ValueError, match="EMBEDDING_DIMENSION must be 1536"):
+        Settings()
