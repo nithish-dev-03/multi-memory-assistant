@@ -12,7 +12,7 @@ from app.models.semantic_memory import SemanticMemory
 class MemoryRetrievalResult:
     """Memories retrieved from the application's long-term memory stores."""
 
-    semantic_memories: list[SemanticMemory]
+    semantic_memories: list[tuple[SemanticMemory, float]]
     episodic_memories: list[EpisodicMemory]
 
     @property
@@ -66,7 +66,7 @@ class MemoryRetrievalService:
         self._validate_positive_int(semantic_limit, "semantic_limit")
         self._validate_positive_int(episodic_limit, "episodic_limit")
 
-        semantic_memories = self.semantic_service.search_memories(
+        semantic_memories = self.semantic_service.search_memories_with_distance(
             user_id=user_id,
             query=query,
             top_k=semantic_limit,

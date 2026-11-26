@@ -41,6 +41,18 @@ class MemoryContextBuilder:
     
 
     @staticmethod
+    def _extract_memory_text(item: Any) -> str | None:
+        """
+        Extract text from a semantic `(memory, distance)` tuple, a semantic
+        memory (`content`), or an episodic memory (`summary`).
+        """
+        memory = item[0] if isinstance(item, tuple) else item
+        text = getattr(memory, "content", None)
+        if text is None:
+            text = getattr(memory, "summary", None)
+        return text
+
+    @staticmethod
     def _normalize_content(content: str) -> str:
         """
         Normalize memory content for duplicate comparison.
@@ -59,9 +71,9 @@ class MemoryContextBuilder:
         seen_contents = set()
 
         for memory in memories:
-            content = getattr(memory, "content", None)
+            content = self._extract_memory_text(memory)
 
-            if not content:
+            if not content or not content.strip():
                 continue
 
             normalized_content = self._normalize_content(content)
@@ -77,16 +89,10 @@ class MemoryContextBuilder:
 
     @staticmethod
     def _prioritize_semantic_memories(
-        memories: list[Any],
-    ) -> list[Any]:
-        """
-        Sort semantic memories by cosine distance.
-        Lower distance means higher relevance.
-        """
-        return sorted(
-            memories,
-            key=lambda memory: getattr(memory, "distance", float("inf")),
-        )
+        memories: list[tuple[Any, float]],
+    ) -> list[tuple[Any, float]]:
+        """Sort semantic matches by ascending cosine distance."""
+        return sorted(memories, key=lambda item: item[1])
 
     @staticmethod
     def _prioritize_episodic_memories(
@@ -133,9 +139,9 @@ class MemoryContextBuilder:
         used_tokens = 0
 
         for memory in memories:
-            content = getattr(memory, "content", None)
+            content = self._extract_memory_text(memory)
 
-            if not content:
+            if not content or not content.strip():
                 continue
 
             memory_tokens = self._count_tokens(
