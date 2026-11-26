@@ -1,5 +1,8 @@
 
 from app.agents.chat_agent import create_chat_model
+from app.memory.short_term import ShortTermMemory
+from app.utils.chat_services import summarize_history
+from app.core.config import settings
 
 from langchain_core.messages import (
     HumanMessage,
@@ -7,23 +10,25 @@ from langchain_core.messages import (
     BaseMessage,
     AIMessage,
 )
-from app.utils.chat_services import summarize_history
-from app.core.config import settings
 
-def count_token(model, messages):
-    """
-    Counts the number of tokens in the messages.
-    """
+
+def count_token(model, messages: list[BaseMessage]) -> int:
+    """Count tokens in the supplied messages."""
     return model.get_num_tokens_from_messages(messages)
+
 
 def create_convo():
     model = create_chat_model(settings.chat_model)
 
-    message_history: list[BaseMessage] = [
-        SystemMessage(
-            content="You are a helpful assistant."
+    memory = ShortTermMemory()
+    session_id = "cli-session"
+
+    # Initialize the session with a system message.
+    if not memory.get_messages(session_id):
+        memory.add_message(
+            session_id,
+            SystemMessage(content="You are a helpful assistant.")
         )
-    ]
 
     while True:
         text = input("\nYou: ").strip()
@@ -35,16 +40,23 @@ def create_convo():
         if not text:
             continue
 
-        previous_length = len(message_history)
-        message_history.append(
+        # 1. Backup existing history for rollback.
+        previous_history = memory.get_messages(session_id)
+
+        # 2. Add the user's message.
+        memory.add_message(
+            session_id,
             HumanMessage(content=text)
         )
 
-        print("\nAssistant: ", end="", flush=True)
+        # 3. Retrieve updated history.
+        message_history = memory.get_messages(session_id)
 
+        print("\nAssistant: ", end="", flush=True)
         ai_response = ""
 
         try:
+            # 4. Generate the assistant response.
             for chunk in model.stream(message_history):
                 content = chunk.content
 
@@ -56,36 +68,63 @@ def create_convo():
                     for block in content:
                         if isinstance(block, dict):
                             text_content = block.get("text", "")
+
                             if text_content:
                                 print(text_content, end="", flush=True)
                                 ai_response += text_content
 
             print("\n")
 
-            message_history.append(
+            # 5. Store the assistant response.
+            memory.add_message(
+                session_id,
                 AIMessage(content=ai_response)
             )
+
+            # 6. Retrieve complete history and count tokens.
+            message_history = memory.get_messages(session_id)
+
             tokens = count_token(model, message_history)
             print(f"Tokens: {tokens}")
+
             max_tokens = settings.sliding_window_size
+
+            # 7. Summarize if the token threshold is reached.
             if tokens >= max_tokens:
-                message_history = summarize_history(message_history, max_tokens, current_tokens=tokens)
-            print("\n--- COMPRESSED HISTORY ---")
+                message_history = summarize_history(
+                    message_history,
+                    max_tokens,
+                    current_tokens=tokens
+                )
+
+                # 8. Save compressed history.
+                memory.replace_messages(
+                    session_id,
+                    message_history
+                )
+
+            # Display final stored history.
+            print("\n--- STORED HISTORY ---")
 
             for index, message in enumerate(message_history):
                 print(
                     f"{index}: "
                     f"{message.type} -> {message.content}"
-            )
-            print(
-                f"\nFinal token count: "
-                f"{model.get_num_tokens_from_messages(message_history)}"
-            )
-            print(f"Maximum token limit: {settings.sliding_window_size}")
+                )
+
+            final_tokens = count_token(model, message_history)
+
+            print(f"\nFinal token count: {final_tokens}")
+            print(f"Maximum token limit: {max_tokens}")
 
         except Exception as error:
             print(f"\nError: {error}")
-            del message_history[previous_length:]
+
+            # 9. Restore the previous conversation state.
+            memory.replace_messages(
+                session_id,
+                previous_history
+            )
 
 
 def main():
