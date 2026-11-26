@@ -86,6 +86,42 @@ class SemanticMemoryRepository:
 
         return list(self.db.scalars(statement).all())
     
+
+    def search_similar_with_distance(
+        self,
+        user_id: str,
+        query_embedding: list[float],
+        top_k: int = 5,
+        max_distance: float | None = None,
+    ) -> list[tuple[SemanticMemory, float]]:
+        """
+        Retrieves active user memories together with their cosine distance.
+
+        Lower cosine-distance values indicate a closer semantic match.
+        This method is read-only and does not commit or alter the session.
+        """
+        self._validate_min_int(top_k, 1, "top_k must be greater than zero")
+
+        distance = SemanticMemory.embedding.cosine_distance(query_embedding)
+        statement = (
+            select(
+                SemanticMemory,
+                distance.label("distance"),
+            )
+            .where(
+                SemanticMemory.user_id == user_id,
+                SemanticMemory.is_active.is_(True),
+            )
+        )
+
+        if max_distance is not None:
+            statement = statement.where(distance <= max_distance)
+
+        statement = statement.order_by(distance.asc()).limit(top_k)
+
+        rows = self.db.execute(statement).all()
+        return [(memory, float(memory_distance)) for memory, memory_distance in rows]
+
     def get_by_id(
         self,
         memory_id: uuid.UUID,
