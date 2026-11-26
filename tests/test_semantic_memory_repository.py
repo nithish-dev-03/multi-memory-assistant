@@ -411,3 +411,51 @@ def test_update_accepts_preloaded_memory_from_same_session(monkeypatch):
         assert memory.confidence == 0.9
         assert commit_calls == [True]
         assert refresh_calls == [memory]
+
+
+
+def test_search_similar_with_distance_returns_memory_distance_pairs_in_query_order():
+    first = SemanticMemory(user_id="user-1", content="closest", embedding=[0.1])
+    second = SemanticMemory(user_id="user-1", content="next", embedding=[0.2])
+    mock_db = MagicMock()
+    mock_db.execute.return_value.all.return_value = [(first, 0.08), (second, 0.31)]
+    repository = SemanticMemoryRepository(mock_db)
+
+    results = repository.search_similar_with_distance(
+        user_id="user-1", query_embedding=[0.5], top_k=2
+    )
+
+    assert results == [(first, 0.08), (second, 0.31)]
+    sql = str(mock_db.execute.call_args.args[0])
+    assert "semantic_memories.user_id = :user_id_1" in sql
+    assert "semantic_memories.is_active IS true" in sql
+    assert "ORDER BY distance ASC" in sql
+    assert "LIMIT" in sql
+    mock_db.commit.assert_not_called()
+    mock_db.rollback.assert_not_called()
+
+
+def test_search_similar_with_distance_applies_max_distance_filter():
+    mock_db = MagicMock()
+    mock_db.execute.return_value.all.return_value = []
+    repository = SemanticMemoryRepository(mock_db)
+
+    repository.search_similar_with_distance(
+        user_id="user-1", query_embedding=[0.5], top_k=4, max_distance=0.4
+    )
+
+    sql = str(mock_db.execute.call_args.args[0])
+    assert "semantic_memories.embedding <=> :embedding_1 <= :param_1" in sql
+
+
+@pytest.mark.parametrize("invalid_top_k", [0, -1, True, 1.5])
+def test_search_similar_with_distance_rejects_invalid_top_k(invalid_top_k):
+    mock_db = MagicMock()
+    repository = SemanticMemoryRepository(mock_db)
+
+    with pytest.raises(ValueError, match="top_k must be greater than zero"):
+        repository.search_similar_with_distance(
+            user_id="user-1", query_embedding=[0.5], top_k=invalid_top_k
+        )
+
+    mock_db.execute.assert_not_called()
