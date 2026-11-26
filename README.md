@@ -1,107 +1,167 @@
 # Multi-Memory Assistant
 
-An interactive CLI conversational assistant built with Python, LangChain, Google Gemini (`langchain-google-genai`), SQLAlchemy, and PostgreSQL (`pgvector`). It combines session-based short-term memory, sliding-window summarization, vector-backed semantic memory, recency-ordered episodic memory, unified prompt token budgeting, and an LLM-powered memory management agent.
+An interactive AI chat assistant that remembers your conversations like a human does—keeping track of the **current chat**, **long-term facts about you**, and **important past events**, even across separate sessions.
 
-## Architecture
+Built with Python, LangChain, Google Gemini (`langchain-google-genai`), SQLAlchemy, and PostgreSQL (`pgvector`).
+
+---
+
+## How It Works (In Plain English)
+
+Most simple chatbots forget everything the moment you close the window. This assistant solves that using **three separate types of memory**, each with its own job:
+
+| Memory Type | Human Analogy | What It Stores | Where It Lives |
+| --- | --- | --- | --- |
+| **Short-Term Memory** | *Working memory ("Right now")* | Messages from the current chat session; automatically summarizes older messages if the chat gets too long | In app memory (`ShortTermMemory`) |
+| **Semantic Memory** | *Long-term knowledge ("Facts about you")* | Your name, skills, preferences, goals, active projects, and decisions; searched by **meaning** | PostgreSQL `semantic_memories` (`pgvector`) |
+| **Episodic Memory** | *Diary / timeline ("Things that happened")* | Important milestones, session events, and key decisions; recalled from **newest to oldest** | PostgreSQL `episodic_memories` |
+
+---
+
+## App Architecture & Flow Diagrams
+
+### 1. Big-Picture Architecture
+
+Every time you send a message, it moves through four simple stages—**Look Up**, **Pack Within Token Limit**, **Answer**, and **Remember**:
 
 ```mermaid
 flowchart TD
-    User["CLI User (app/main.py)"] --> ShortTerm["ShortTermMemory (Session History)"]
-    User --> Retrieval["MemoryRetrievalService"]
-    Retrieval --> SemanticSvc["SemanticMemoryService"]
-    Retrieval --> EpisodicSvc["EpisodicMemoryService"]
-    SemanticSvc --> EmbedSvc["EmbeddingService (Gemini Embeddings)"]
-    SemanticSvc --> SemanticRepo["SemanticMemoryRepository"]
-    EpisodicSvc --> EpisodicRepo["EpisodicMemoryRepository"]
-    SemanticRepo --> Postgres["PostgreSQL + pgvector"]
-    EpisodicRepo --> Postgres
+    User["1. You Type a Message (CLI)"] --> Retrieve["2. Look Up Relevant Memories"]
+    User --> ShortTerm["Short-Term Memory (Current Chat)"]
 
-    Retrieval --> ContextBuilder["MemoryContextBuilder"]
-    ShortTerm --> BudgetMgr["PromptBudgetManager"]
-    ContextBuilder --> BudgetMgr
-    BudgetMgr --> ChatModel["ChatGoogleGenerativeAI"]
+    subgraph Recall["Stage 1 - Remember What Matters"]
+        Retrieve --> SemanticRead["Find Similar Facts (Semantic Search)"]
+        Retrieve --> EpisodicRead["Fetch Recent Events (Episodic Timeline)"]
+        SemanticRead --> DB[("PostgreSQL + pgvector Database")]
+        EpisodicRead --> DB
+    end
 
-    ShortTerm --> SummarizeSvc["summarize_history + summarize_agent"]
-    ChatModel --> MemoryAgent["MemoryManagerAgent (Structured Output + Tools)"]
-    MemoryAgent --> SemanticSvc
-    MemoryAgent --> EpisodicSvc
+    subgraph Pack["Stage 2 - Fit Everything Safely"]
+        SemanticRead --> ContextBuilder["Clean, Deduplicate & Format Memories"]
+        EpisodicRead --> ContextBuilder
+        ShortTerm --> BudgetMgr["Prompt Budget Manager (Token Limit Guard)"]
+        ContextBuilder --> BudgetMgr
+    end
+
+    subgraph Reply["Stage 3 - Generate Answer"]
+        BudgetMgr --> Gemini["Gemini AI Chat Model"]
+        Gemini --> Answer["Stream Reply to Your Screen"]
+        Answer --> ShortTerm
+        ShortTerm --> Summarizer["Summarize Older Chat if Too Long"]
+    end
+
+    subgraph Save["Stage 4 - Save New Long-Term Memories"]
+        Answer --> MemoryAgent["Memory Manager Agent (Filters Out Small Talk & Secrets)"]
+        MemoryAgent -->|"New or updated facts"| DB
+        MemoryAgent -->|"Significant events"| DB
+    end
 ```
 
-### Memory Types
+### 2. Step-by-Step Conversation Flow
 
-| Memory Type | Storage | Retrieval Strategy | Purpose |
-| --- | --- | --- | --- |
-| **Short-Term Memory** | In-memory (`ShortTermMemory`) | Per-session chronological list | Holds active conversation turns and rolling `"Conversation summary"` messages; isolated from retrieved long-term context. |
-| **Semantic Memory** | PostgreSQL `semantic_memories` (`Vector(1536)`) | Cosine similarity via `pgvector` (`(memory, distance)`) + optional `max_distance`, `category`, and JSONB `metadata_json` filters | Durable facts, user preferences, technical skills, goals, projects, and decisions; supports soft deactivation (`is_active=False`) and conditional re-embedding on content updates. |
-| **Episodic Memory** | PostgreSQL `episodic_memories` | Recency (`created_at DESC, id DESC`), optional session/event/metadata filters | Chronological summaries of significant conversation events and milestones. |
-
-## Request Flow
+Here is what happens behind the scenes for a single message:
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant CLI as app/main.py
-    participant DB as PostgreSQL (pgvector)
-    participant R as MemoryRetrievalService
-    participant PB as PromptBudgetManager
-    participant ST as ShortTermMemory
-    participant LLM as Gemini Chat Model
-    participant MA as MemoryManagerAgent
+    participant U as You
+    participant App as Chat App (main.py)
+    participant ST as Short-Term Memory
+    participant DB as Long-Term Memory (PostgreSQL)
+    participant PB as Token Budgeter
+    participant AI as Gemini AI
+    participant MA as Memory Saver Agent
 
-    U->>CLI: Enter message
-    CLI->>ST: Backup previous_history
-    CLI->>R: retrieve_memories(user_id, query)
-    R->>DB: Vector search (semantic) + recency query (episodic)
-    DB-->>R: MemoryRetrievalResult
-    CLI->>PB: build_prompt(previous_history, user_msg, memories)
-    PB-->>CLI: Token-budgeted transient messages
-    CLI->>ST: Append HumanMessage
-    CLI->>LLM: stream(budget_result.messages)
-    LLM-->>CLI: Streamed response
-    CLI->>ST: Append AIMessage
-    alt Tokens > SLIDING_WINDOW_SIZE
-        CLI->>ST: Summarize older exchanges & replace history
+    U->>App: Send a message
+    App->>ST: Save backup copy (in case something fails)
+    App->>DB: Search matching facts and recent events
+    DB-->>App: Return relevant memories
+    App->>PB: Combine instructions + memories + chat history + new message
+    PB-->>App: Ready-to-send prompt (fits token limit)
+    App->>ST: Save your message in current chat
+    App->>AI: Send prompt and stream reply
+    AI-->>U: Display reply word by word
+    App->>ST: Save AI reply in current chat
+
+    alt Current chat exceeds sliding window limit
+        App->>ST: Summarize older messages and keep recent ones
     end
-    CLI->>MA: process_turn(user_id, session_id, turn, existing_memories)
-    MA->>DB: Scoped upsert/update/deactivate via validated tools
+
+    App->>MA: Review turn for facts or events worth keeping
+    MA->>DB: Save or update memories (skip small talk and secrets)
 ```
 
-If prompt assembly, streaming, or short-term summarization fails, `ShortTermMemory` rolls back to `previous_history`. Long-term memory extraction runs afterwards in an isolated database session so a failed memory write logs a warning without corrupting short-term history.
+> **Safety net:** If the AI reply or chat summarization fails, your current chat rolls back cleanly to before your message. Long-term memory saving runs separately at the end, so even if saving a memory fails, your conversation is never lost.
 
-## Project Structure
+---
+
+## Visual App Structure
+
+Each folder in `app/` has a single, clear responsibility—data flows from the user screen on the left down to the database on the right:
+
+```mermaid
+flowchart LR
+    CLI["Entry Point - app/main.py"] --> Agents["Thinking Layer - app/agents/"]
+    CLI --> Utils["Safety & Limits - app/utils/"]
+    CLI --> Memory["Memory Logic - app/memory/"]
+
+    Agents --> ChatModel["chat_agent.py (Talk to Gemini)"]
+    Agents --> Summarize["summarize_agent.py (Shrink Old Chat)"]
+    Agents --> MemAgent["memory_agent.py (Decide What to Save)"]
+
+    Utils --> ChatSvc["chat_services.py (Sliding Window)"]
+    Utils --> Budget["prompt_budget.py (Token Budget)"]
+
+    Memory --> ST["short_term.py (Current Chat)"]
+    Memory --> Ret["retrieval.py (Fetch Both Memories)"]
+    Memory --> Ctx["context_builder.py (Rank & Format)"]
+    Memory --> Sem["semantic.py (Fact Rules)"]
+    Memory --> Epi["episodic.py (Event Rules)"]
+
+    Sem --> Embed["app/services/embedding_service.py (Text to Vectors)"]
+    Sem --> SemRepo["app/repositories/semantic_memory_repository.py"]
+    Epi --> EpiRepo["app/repositories/episodic_memory_repository.py"]
+
+    SemRepo --> Models["app/models/ & app/core/database.py"]
+    EpiRepo --> Models
+    Models --> Postgres[("PostgreSQL + pgvector")]
+```
+
+### Folder Breakdown
 
 ```text
 ├── app/
-│   ├── main.py                                 # CLI entry point (`uv run assistant`) and turn orchestration
+│   ├── main.py                                 # Starts the CLI (`uv run assistant`) and runs each chat turn
 │   ├── core/
-│   │   ├── config.py                           # Environment & validation (`Settings`)
-│   │   └── database.py                         # SQLAlchemy engine, `SessionLocal`, `get_db`, `get_db_session`
+│   │   ├── config.py                           # Loads and validates `.env` settings (`Settings`)
+│   │   └── database.py                         # Connects to PostgreSQL and manages DB sessions (`get_db`, `get_db_session`)
 │   ├── agents/
-│   │   ├── chat_agent.py                       # Gemini chat model factory
-│   │   ├── summarize_agent.py                  # Structured conversation summarization agent
-│   │   └── memory_agent.py                     # MemoryManagerAgent, Pydantic schemas, secret guard, scoped tools
+│   │   ├── chat_agent.py                       # Creates the Gemini chat model
+│   │   ├── summarize_agent.py                  # Summarizes older messages while keeping key facts
+│   │   └── memory_agent.py                     # Decides what to save/update/deactivate and blocks secrets/PII
 │   ├── memory/
-│   │   ├── short_term.py                       # Session-scoped short-term conversation store
-│   │   ├── semantic.py                         # SemanticMemoryService (lifecycle, search, upsert, soft delete)
-│   │   ├── episodic.py                         # EpisodicMemoryService (create, duplicate check, queries)
-│   │   ├── retrieval.py                        # MemoryRetrievalService coordinating semantic & episodic stores
-│   │   └── context_builder.py                  # Prioritization, cross-store deduplication, formatting, token budget
+│   │   ├── short_term.py                       # Stores messages for the active chat session
+│   │   ├── semantic.py                         # Validates, deduplicates, searches, updates, and soft-deletes facts
+│   │   ├── episodic.py                         # Validates, deduplicates, and fetches event summaries
+│   │   ├── retrieval.py                        # Fetches semantic matches + recent episodic events together
+│   │   └── context_builder.py                  # Ranks, deduplicates, formats, and budgets retrieved memories
 │   ├── models/
-│   │   ├── semantic_memory.py                  # `SemanticMemory` ORM model (`Vector(1536)`)
-│   │   └── episodic_memory.py                  # `EpisodicMemory` ORM model
+│   │   ├── semantic_memory.py                  # Database table definition for semantic memories (`Vector(1536)`)
+│   │   └── episodic_memory.py                  # Database table definition for episodic memories
 │   ├── repositories/
-│   │   ├── semantic_memory_repository.py       # Semantic CRUD, soft deactivation, cosine distance search
-│   │   └── episodic_memory_repository.py       # Episodic CRUD, session/user queries, duplicate lookup
+│   │   ├── semantic_memory_repository.py       # SQL queries for semantic memories & pgvector cosine similarity
+│   │   └── episodic_memory_repository.py       # SQL queries for episodic memories
 │   ├── services/
-│   │   └── embedding_service.py                # Google GenAI document & query embedding wrapper
+│   │   └── embedding_service.py                # Converts text into 1536-dimension Gemini vector embeddings
 │   └── utils/
-│       ├── chat_services.py                    # Sliding-window history summarization
-│       └── prompt_budget.py                    # Unified prompt token budget allocation & overflow protection
-├── migrations/                                 # Alembic migrations (`pgvector` extension + tables)
+│       ├── chat_services.py                    # Compresses older chat history when it crosses the window limit
+│       └── prompt_budget.py                    # Ensures total prompt + reserved reply never exceed token limits
+├── migrations/                                 # Alembic database migrations (`pgvector` + tables)
 ├── scripts/
 │   └── manual_semantic_memory_repository.py    # Live PostgreSQL + Gemini verification script
-└── tests/                                      # Automated mocked unit & integration test suite
+└── tests/                                      # Automated mocked unit & integration tests (256 tests)
 ```
+
+---
 
 ## Setup
 
@@ -113,7 +173,7 @@ If prompt assembly, streaming, or short-term summarization fails, `ShortTermMemo
 
 2. **Configure environment variables**:
 
-   Copy `.env.example` to `.env` and set your own credentials (never commit `.env` or real API keys):
+   Copy `.env.example` to `.env` and fill in your credentials (never commit `.env` or real API keys):
 
    ```bash
    cp .env.example .env
