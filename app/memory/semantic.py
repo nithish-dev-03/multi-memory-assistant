@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from uuid import UUID
 
 from app.models.semantic_memory import SemanticMemory
 from app.repositories.semantic_memory_repository import SemanticMemoryRepository
@@ -87,4 +88,42 @@ class SemanticMemoryService:
             query_embedding=query_embedding,
             top_k=top_k,
             max_distance=max_distance,
+        )
+
+    def update_memory(
+        self,
+        memory_id: UUID,
+        user_id: str,
+        content: str | None = None,
+        category: str | None = None,
+        confidence: float | None = None,
+        metadata_json: dict | None = None,
+    ) -> SemanticMemory | None:
+        """
+        Validates updates, regenerates the embedding only if content changes,
+        and persists the updated semantic memory for the owning user.
+        """
+        self._validate_non_empty_text(user_id, "User ID")
+        if content is not None:
+            self._validate_non_empty_text(content, "Content")
+        self._validate_float_range(confidence, 0.0, 1.0, "Confidence")
+
+        existing_memory = self.repository.get_by_id(memory_id, user_id)
+        if existing_memory is None:
+            return None
+
+        embedding = (
+            self.embedding_service.embed_document(content)
+            if content is not None and content != existing_memory.content
+            else None
+        )
+
+        return self.repository.update(
+            memory_id=memory_id,
+            user_id=user_id,
+            content=content,
+            embedding=embedding,
+            category=category,
+            confidence=confidence,
+            metadata_json=metadata_json,
         )

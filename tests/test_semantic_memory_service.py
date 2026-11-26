@@ -1,3 +1,4 @@
+from uuid import UUID
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -190,3 +191,153 @@ def test_search_memories_boundary_max_distance_succeeds(service, valid_max_dista
         top_k=5,
         max_distance=valid_max_distance,
     )
+
+
+def test_update_memory_content_change_regenerates_embedding(service):
+    memory_id = UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    existing = SemanticMemory(
+        id=memory_id,
+        user_id="user-1",
+        content="Old content",
+        embedding=[0.1],
+    )
+    updated = SemanticMemory(
+        id=memory_id,
+        user_id="user-1",
+        content="New content",
+        embedding=[0.9],
+    )
+    service._mock_repo.get_by_id.return_value = existing
+    service._mock_embedding.embed_document.return_value = [0.9]
+    service._mock_repo.update.return_value = updated
+
+    result = service.update_memory(
+        memory_id=memory_id,
+        user_id="user-1",
+        content="New content",
+    )
+
+    assert result is updated
+    service._mock_repo.get_by_id.assert_called_once_with(memory_id, "user-1")
+    service._mock_embedding.embed_document.assert_called_once_with("New content")
+    service._mock_repo.update.assert_called_once_with(
+        memory_id=memory_id,
+        user_id="user-1",
+        content="New content",
+        embedding=[0.9],
+        category=None,
+        confidence=None,
+        metadata_json=None,
+    )
+
+
+def test_update_memory_same_content_skips_embedding(service):
+    memory_id = UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    existing = SemanticMemory(
+        id=memory_id,
+        user_id="user-1",
+        content="Same content",
+        embedding=[0.1],
+    )
+    service._mock_repo.get_by_id.return_value = existing
+    service._mock_repo.update.return_value = existing
+
+    result = service.update_memory(
+        memory_id=memory_id,
+        user_id="user-1",
+        content="Same content",
+    )
+
+    assert result is existing
+    service._mock_embedding.embed_document.assert_not_called()
+    service._mock_repo.update.assert_called_once_with(
+        memory_id=memory_id,
+        user_id="user-1",
+        content="Same content",
+        embedding=None,
+        category=None,
+        confidence=None,
+        metadata_json=None,
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"metadata_json": {"source": "profile"}},
+        {"category": "professional"},
+        {"confidence": 0.85},
+    ],
+)
+def test_update_memory_metadata_only_does_not_regenerate_embedding(service, kwargs):
+    memory_id = UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    existing = SemanticMemory(
+        id=memory_id,
+        user_id="user-1",
+        content="Existing content",
+        embedding=[0.1],
+    )
+    service._mock_repo.get_by_id.return_value = existing
+    service._mock_repo.update.return_value = existing
+
+    result = service.update_memory(memory_id=memory_id, user_id="user-1", **kwargs)
+
+    assert result is existing
+    service._mock_embedding.embed_document.assert_not_called()
+    service._mock_repo.update.assert_called_once_with(
+        memory_id=memory_id,
+        user_id="user-1",
+        content=None,
+        embedding=None,
+        category=kwargs.get("category"),
+        confidence=kwargs.get("confidence"),
+        metadata_json=kwargs.get("metadata_json"),
+    )
+
+
+def test_update_memory_nonexistent_or_unauthorized_returns_none(service):
+    memory_id = UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    service._mock_repo.get_by_id.return_value = None
+
+    result = service.update_memory(
+        memory_id=memory_id,
+        user_id="other-user",
+        content="Attempted overwrite",
+    )
+
+    assert result is None
+    service._mock_repo.get_by_id.assert_called_once_with(memory_id, "other-user")
+    service._mock_embedding.embed_document.assert_not_called()
+    service._mock_repo.update.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_message"),
+    [
+        ({"user_id": "", "content": "Valid"}, "User ID cannot be empty"),
+        ({"user_id": "   ", "content": "Valid"}, "User ID cannot be empty"),
+        ({"user_id": "user-1", "content": ""}, "Content cannot be empty"),
+        ({"user_id": "user-1", "content": "   "}, "Content cannot be empty"),
+        (
+            {"user_id": "user-1", "confidence": -0.1},
+            "Confidence must be between 0.0 and 1.0",
+        ),
+        (
+            {"user_id": "user-1", "confidence": 1.1},
+            "Confidence must be between 0.0 and 1.0",
+        ),
+        (
+            {"user_id": "user-1", "confidence": True},
+            "Confidence must be between 0.0 and 1.0",
+        ),
+    ],
+)
+def test_update_memory_rejects_invalid_input(service, kwargs, expected_message):
+    memory_id = UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+
+    with pytest.raises(ValueError, match=expected_message):
+        service.update_memory(memory_id=memory_id, **kwargs)
+
+    service._mock_repo.get_by_id.assert_not_called()
+    service._mock_embedding.embed_document.assert_not_called()
+    service._mock_repo.update.assert_not_called()
