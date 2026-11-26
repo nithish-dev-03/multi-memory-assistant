@@ -90,6 +90,32 @@ class SemanticMemoryService:
             max_distance=max_distance,
         )
 
+    def search_memories_with_distance(
+        self,
+        user_id: str,
+        query: str,
+        top_k: int = 5,
+        max_distance: float | None = None,
+    ) -> list[tuple[SemanticMemory, float]]:
+        """
+        Retrieve semantically similar active memories with their cosine distances.
+
+        Lower distance values represent closer semantic matches.
+        """
+        self._validate_non_empty_text(user_id, "User ID")
+        self._validate_non_empty_text(query, "Query")
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+            raise ValueError("top_k must be greater than zero")
+        self._validate_float_range(max_distance, 0.0, 2.0, "max_distance")
+
+        query_embedding = self.embedding_service.embed_query(query)
+        return self.repository.search_similar_with_distance(
+            user_id=user_id,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            max_distance=max_distance,
+        )
+
     def update_memory(
         self,
         memory_id: UUID,
