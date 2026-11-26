@@ -6,10 +6,27 @@ from langchain_core.messages import (
     AIMessage,
 )
 
-from app.agents.sumarize_agent import (
+from app.agents.summarize_agent import (
     chat_summarize,
-    sumarize_agent,
+    summarize_agent,
 )
+
+
+def _build_history(
+    system_message: SystemMessage | None,
+    summary_message: SystemMessage,
+    recent: list[list[BaseMessage]],
+) -> list[BaseMessage]:
+    history: list[BaseMessage] = []
+    if system_message:
+        history.append(system_message)
+    history.append(summary_message)
+    history.extend(
+        message
+        for exchange in recent
+        for message in exchange
+    )
+    return history
 
 
 def summarize_history(
@@ -59,12 +76,27 @@ def summarize_history(
     if current_exchange:
         exchanges.append(current_exchange)
 
-    recent = exchanges[-recent_exchanges:]
-
-    older = exchanges[:-recent_exchanges]
+    if recent_exchanges > 0:
+        recent = exchanges[-recent_exchanges:]
+        older = exchanges[:-recent_exchanges]
+    else:
+        recent = []
+        older = exchanges[:]
 
     if not older and previous_summary is None:
-        return messages
+        if not exchanges:
+            raise ValueError(
+                f"History exceeds token budget with no exchanges to summarize. "
+                f"Required: {token_count}, Available: {max_tokens}"
+            )
+        if len(exchanges) > 1:
+            # Fallback: summarize the oldest exchange while retaining remaining recent context.
+            older = exchanges[:1]
+            recent = exchanges[1:]
+        else:
+            # Single oversized exchange: summarize it completely to fit within budget.
+            older = exchanges[:]
+            recent = []
 
     summary_input = []
 
@@ -74,25 +106,17 @@ def summarize_history(
     for exchange in older:
         summary_input.extend(exchange)
 
-    summary = sumarize_agent(summary_input)
+    summary = summarize_agent(summary_input)
 
     summary_message = SystemMessage(
         content=f"Conversation summary:\n{summary}"
     )
 
-    recent_messages = [
-        message
-        for exchange in recent
-        for message in exchange
-    ]
-
-    updated_history = []
-
-    if system_message:
-        updated_history.append(system_message)
-
-    updated_history.append(summary_message)
-    updated_history.extend(recent_messages)
+    updated_history = _build_history(
+        system_message,
+        summary_message,
+        recent,
+    )
 
     while True:
         updated_tokens = (
@@ -110,21 +134,11 @@ def summarize_history(
 
         if len(recent) > 0:
             recent.pop(0)
-
-            recent_messages = [
-                message
-                for exchange in recent
-                for message in exchange
-            ]
-
-            updated_history = []
-
-            if system_message:
-                updated_history.append(system_message)
-
-            updated_history.append(summary_message)
-            updated_history.extend(recent_messages)
-
+            updated_history = _build_history(
+                system_message,
+                summary_message,
+                recent,
+            )
             continue
 
         raise ValueError(

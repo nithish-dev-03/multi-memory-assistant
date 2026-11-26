@@ -35,6 +35,7 @@ def create_convo():
         if not text:
             continue
 
+        previous_length = len(message_history)
         message_history.append(
             HumanMessage(content=text)
         )
@@ -69,10 +70,22 @@ def create_convo():
             max_tokens = settings.sliding_window_size
             if tokens >= max_tokens:
                 message_history = summarize_history(message_history, max_tokens, current_tokens=tokens)
+            print("\n--- COMPRESSED HISTORY ---")
+
+            for index, message in enumerate(message_history):
+                print(
+                    f"{index}: "
+                    f"{message.type} -> {message.content}"
+            )
+            print(
+                f"\nFinal token count: "
+                f"{model.get_num_tokens_from_messages(message_history)}"
+            )
+            print(f"Maximum token limit: {settings.sliding_window_size}")
 
         except Exception as error:
             print(f"\nError: {error}")
-            message_history.pop()
+            del message_history[previous_length:]
 
 
 def main():
