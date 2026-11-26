@@ -13,13 +13,12 @@ An interactive CLI chat assistant built with Python, LangChain, and Google Gemin
 
 ```text
 app/
-├── main.py                     # CLI entry point (`uv run dev`) and conversation loop
+├── main.py                     # CLI entry point (`uv run assistant`) and conversation loop
 ├── core/
 │   └── config.py               # Environment configuration (`Settings`)
 ├── agents/
 │   ├── chat_agent.py           # Gemini chat model factory
-│   ├── summarize_agent.py      # Conversation summarization agent and prompt
-│   └── memory_agent.py         # Placeholder for upcoming memory orchestration
+│   └── summarize_agent.py      # Conversation summarization agent and prompt
 ├── utils/
 │   └── chat_services.py        # Sliding-window history summarization and token validation
 └── memory/
@@ -55,7 +54,7 @@ app/
 Start the interactive assistant:
 
 ```bash
-uv run dev
+uv run assistant
 ```
 
 Type `exit`, `quit`, or `bye` to end the session.

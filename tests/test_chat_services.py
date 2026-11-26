@@ -92,7 +92,7 @@ def test_previous_summary_is_included_in_new_summary(token_counter_patch):
     assert result[2:] == [*ex2, *ex3]
 
 
-def test_recent_exchanges_are_preserved_when_within_budget(token_counter_patch):
+def test_recent_exchanges_are_preserved_after_old_history_is_summarized(token_counter_patch):
     system_msg = SystemMessage(content="System.")
     ex1 = [
         HumanMessage(content=" ".join(["archive"] * 15)),
@@ -179,3 +179,22 @@ def test_summary_exceeds_budget_raises_value_error(token_counter_patch):
                 max_tokens=5,
                 recent_exchanges=2,
             )
+
+
+def test_system_message_only_exceeds_budget_raises_value_error(token_counter_patch):
+    messages = [
+        SystemMessage(content=" ".join(["instructions"] * 20)),
+    ]
+
+    with patch.object(chat_services, "summarize_agent") as mock_summarize:
+        with pytest.raises(
+            ValueError,
+            match="History exceeds token budget with no exchanges to summarize",
+        ):
+            chat_services.summarize_history(
+                messages,
+                max_tokens=5,
+                recent_exchanges=2,
+            )
+
+    mock_summarize.assert_not_called()

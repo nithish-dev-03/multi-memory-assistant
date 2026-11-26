@@ -2,7 +2,6 @@
 from langchain_core.messages import (
     BaseMessage,
     SystemMessage,
-    HumanMessage,
     AIMessage,
 )
 
