@@ -429,7 +429,10 @@ def test_search_similar_with_distance_returns_memory_distance_pairs_in_query_ord
     sql = str(mock_db.execute.call_args.args[0])
     assert "semantic_memories.user_id = :user_id_1" in sql
     assert "semantic_memories.is_active IS true" in sql
-    assert "ORDER BY distance ASC" in sql
+    assert (
+    "ORDER BY (semantic_memories.embedding <=> :embedding_1) ASC"
+    in sql
+)
     assert "LIMIT" in sql
     mock_db.commit.assert_not_called()
     mock_db.rollback.assert_not_called()
@@ -445,7 +448,10 @@ def test_search_similar_with_distance_applies_max_distance_filter():
     )
 
     sql = str(mock_db.execute.call_args.args[0])
-    assert "semantic_memories.embedding <=> :embedding_1 <= :param_1" in sql
+    assert (
+    "(semantic_memories.embedding <=> :embedding_1) <= :param_1"
+    in sql
+)
 
 
 @pytest.mark.parametrize("invalid_top_k", [0, -1, True, 1.5])
