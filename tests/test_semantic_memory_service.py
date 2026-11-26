@@ -344,3 +344,49 @@ def test_update_memory_rejects_invalid_input(service, kwargs, expected_message):
     service._mock_repo.get_by_id.assert_not_called()
     service._mock_embedding.embed_document.assert_not_called()
     service._mock_repo.update.assert_not_called()
+
+
+
+def test_search_memories_with_distance_embeds_query_and_returns_distances(service):
+    query_embedding = [0.2, 0.4, 0.6]
+    expected_results = [(MagicMock(spec=SemanticMemory), 0.08), (MagicMock(spec=SemanticMemory), 0.31)]
+    service._mock_embedding.embed_query.return_value = query_embedding
+    service._mock_repo.search_similar_with_distance.return_value = expected_results
+
+    results = service.search_memories_with_distance(
+        user_id="user-1",
+        query="What frameworks does the user know?",
+        top_k=3,
+        max_distance=0.45,
+    )
+
+    assert results == expected_results
+    service._mock_embedding.embed_query.assert_called_once_with(
+        "What frameworks does the user know?"
+    )
+    service._mock_repo.search_similar_with_distance.assert_called_once_with(
+        user_id="user-1",
+        query_embedding=query_embedding,
+        top_k=3,
+        max_distance=0.45,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"user_id": "", "query": "Valid"}, "User ID cannot be empty"),
+        ({"user_id": "user-1", "query": "  "}, "Query cannot be empty"),
+        ({"user_id": "user-1", "query": "Valid", "top_k": 0}, "top_k must be greater than zero"),
+        ({"user_id": "user-1", "query": "Valid", "top_k": True}, "top_k must be greater than zero"),
+        ({"user_id": "user-1", "query": "Valid", "max_distance": -0.1}, "max_distance must be between 0.0 and 2.0"),
+        ({"user_id": "user-1", "query": "Valid", "max_distance": 2.1}, "max_distance must be between 0.0 and 2.0"),
+        ({"user_id": "user-1", "query": "Valid", "max_distance": True}, "max_distance must be between 0.0 and 2.0"),
+    ],
+)
+def test_search_memories_with_distance_validates_inputs(service, kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        service.search_memories_with_distance(**kwargs)
+
+    service._mock_embedding.embed_query.assert_not_called()
+    service._mock_repo.search_similar_with_distance.assert_not_called()
