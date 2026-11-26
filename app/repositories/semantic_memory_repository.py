@@ -1,5 +1,5 @@
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 from sqlalchemy import select
 import uuid
 
@@ -169,8 +169,13 @@ class SemanticMemoryRepository:
     ) -> SemanticMemory | None:
         if memory is None:
             memory = self.get_by_id(memory_id, user_id)
-        elif memory.id != memory_id or memory.user_id != user_id:
-            raise ValueError("Provided memory does not match memory_id and user_id")
+        else:
+            if memory.id != memory_id or memory.user_id != user_id:
+                raise ValueError("Provided memory does not match memory_id and user_id")
+            if isinstance(self.db, Session) and object_session(memory) is not self.db:
+                raise ValueError(
+                    "Provided memory does not belong to the current database session"
+                )
 
         if memory is None:
             return None

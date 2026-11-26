@@ -323,3 +323,91 @@ def test_settings_rejects_mismatched_embedding_dimension(monkeypatch):
 
     with pytest.raises(ValueError, match="EMBEDDING_DIMENSION must be 1536"):
         Settings()
+
+
+def test_update_rejects_preloaded_memory_from_different_session():
+    from sqlalchemy.orm import Session
+
+    memory_id = uuid.UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    memory = SemanticMemory(
+        id=memory_id,
+        user_id="test-user-001",
+        content="original content",
+        embedding=[0.1],
+    )
+    session_a = Session()
+    session_b = Session()
+    try:
+        session_a.add(memory)
+        repository = SemanticMemoryRepository(session_b)
+
+        with pytest.raises(
+            ValueError,
+            match="Provided memory does not belong to the current database session",
+        ):
+            repository.update(
+                memory_id=memory_id,
+                user_id="test-user-001",
+                confidence=0.9,
+                memory=memory,
+            )
+    finally:
+        session_a.close()
+        session_b.close()
+
+
+def test_update_rejects_detached_preloaded_memory_for_real_session():
+    from sqlalchemy.orm import Session
+
+    memory_id = uuid.UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    memory = SemanticMemory(
+        id=memory_id,
+        user_id="test-user-001",
+        content="original content",
+        embedding=[0.1],
+    )
+    with Session() as session:
+        repository = SemanticMemoryRepository(session)
+
+        with pytest.raises(
+            ValueError,
+            match="Provided memory does not belong to the current database session",
+        ):
+            repository.update(
+                memory_id=memory_id,
+                user_id="test-user-001",
+                confidence=0.9,
+                memory=memory,
+            )
+
+
+def test_update_accepts_preloaded_memory_from_same_session(monkeypatch):
+    from sqlalchemy.orm import Session
+
+    memory_id = uuid.UUID("c886a39a-960f-4ee4-8f34-c2d9914d2d53")
+    memory = SemanticMemory(
+        id=memory_id,
+        user_id="test-user-001",
+        content="original content",
+        embedding=[0.1],
+        confidence=0.5,
+    )
+    with Session() as session:
+        session.add(memory)
+        commit_calls = []
+        refresh_calls = []
+        monkeypatch.setattr(session, "commit", lambda: commit_calls.append(True))
+        monkeypatch.setattr(session, "refresh", lambda obj: refresh_calls.append(obj))
+
+        repository = SemanticMemoryRepository(session)
+        result = repository.update(
+            memory_id=memory_id,
+            user_id="test-user-001",
+            confidence=0.9,
+            memory=memory,
+        )
+
+        assert result is memory
+        assert memory.confidence == 0.9
+        assert commit_calls == [True]
+        assert refresh_calls == [memory]
